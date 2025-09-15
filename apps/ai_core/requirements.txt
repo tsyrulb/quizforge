@@ -1,0 +1,9 @@
+﻿fastapi
+uvicorn[standard]
+httpx
+pydantic
+pyyaml
+chromadb
+sentence-transformers
+numpy
+python-dotenv

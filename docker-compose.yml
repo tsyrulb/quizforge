@@ -1,0 +1,46 @@
+# docker-compose.yml  (no "version:" key needed)
+
+services:
+  # Local LLM host (Ollama)
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    # CPU-only by default (avoids NVIDIA/WSL issues). Remove this env and
+    # uncomment 'gpus: all' below when you set up GPU support.
+    environment:
+      - OLLAMA_NO_GPU=1
+    # For GPU later (requires NVIDIA Container Toolkit):
+    # gpus: all
+    volumes:
+      - ollama_models:/root/.ollama   # models persist across rebuilds
+
+  # Your AI service (FastAPI)
+  ai_core:
+    build:
+      context: ./apps/ai_core
+    restart: unless-stopped
+    # Read model choices + base URL from .env at repo root
+    env_file: .env
+    environment:
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - MODEL_GENERAL=${MODEL_GENERAL}
+      - MODEL_CODER=${MODEL_CODER}
+      - MODEL_REASONER=${MODEL_REASONER}
+      - RAG_PERSIST=/data/rag_store
+    ports:
+      - "8000:8000"
+    # Mount code for live reload; persist RAG index in a volume
+    volumes:
+      - ./apps/ai_core:/app
+      - rag_data:/data
+    # Dev command: auto-reload when you edit Python files
+    command: ["uvicorn","service:app","--host","0.0.0.0","--port","8000","--reload"]
+    depends_on:
+      - ollama
+
+volumes:
+  ollama_models:
+  rag_data:
