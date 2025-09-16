@@ -96,3 +96,34 @@ def ensure_json(s: str) -> dict:
 
 def truncate(text: str, n: int = 4000) -> str:
     return text if len(text) <= n else text[:n] + "…"
+
+def strip_cot(text: str) -> str:
+    if not isinstance(text, str): return text
+    text = re.sub(r"(?is)<think>.*?</think>\s*", "", text)
+    text = re.sub(r"(?is)</?think>", "", text)
+    return text.strip()
+
+_FILLER_START = re.compile(r"^(okay[,!\.]?\s+|so[,!\.]?\s+|well[,!\.]?\s+|i\s+(need|have)\s+to\s+|we\s+(need|have)\s+to\s+|let'?s\s+|you\s+need\s+to\s+)", re.I)
+
+def first_sentence(text: str, max_chars: int = 160) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    m = re.search(r"[.!?](\s|$)", text)
+    s = text[: m.end(0)].strip() if m else text[:max_chars].strip()
+    if s and s[-1] not in ".!?": s += "."
+    return s
+
+def sanitize_hint(text: str, max_words: int = 25) -> str:
+    t = strip_cot(text)
+    t = first_sentence(t)
+    # remove leading filler phrases
+    while True:
+        new = _FILLER_START.sub("", t).strip()
+        if new == t: break
+        t = new
+    # force imperative tone: start with a verb if possible (light touch)
+    t = re.sub(r"^(You should|You need to|We should|We need to)\s+", "", t, flags=re.I)
+    # hard word cap
+    words = t.split()
+    if len(words) > max_words:
+        t = " ".join(words[:max_words]) + "..."
+    return t

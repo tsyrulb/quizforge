@@ -1,10 +1,11 @@
 import os
 import json
 from typing import Optional
-from utils import normalize_mcq, normalize_short
+from utils import normalize_mcq, normalize_short, strip_cot, first_sentence
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
+import httpx 
 
 from schemas import (
     GenerateRequest, MCQQuestion, CodingQuestion, SQLQuestion, ShortQuestion,
@@ -190,34 +191,50 @@ async def grade_short(req: GradeShortRequest):
 # ------------------------------------------------------------------------------
 @app.post("/hint")
 async def hint(body: dict):
-    """
-    Provide a concise hint (not a full solution). Accepts:
-    {
-      "question": {...},          # the question JSON you generated earlier
-      "failed_tests": ["name"],   # optional
-      "partial_answer": "..."     # optional
+    q = body.get("question", {}) or {}
+    failed = body.get("failed_tests", [])[:5]
+    partial = (body.get("partial_answer", "") or "")[:1200]
+
+    brief = {
+        "type": q.get("type"), "title": q.get("title"), "language": q.get("language"),
+        "difficulty": q.get("difficulty"), "signature": q.get("signature"),
+        "prompt": q.get("prompt"), "constraints": (q.get("constraints") or [])[:4],
+        "failed_tests": failed,
     }
-    """
-    question_json = json.dumps(body.get("question", {}), ensure_ascii=False)
-    failed_tests = ", ".join(body.get("failed_tests", []) or [])
-    partial = (body.get("partial_answer", "") or "")[:2000]
-
-    hint_prompt = f"""You are a helpful tutor. Give one concise hint, not a solution.
-If tests failed, focus on what to check next. Avoid code unless essential.
-Question JSON:
-{question_json}
-
-Failed tests: {failed_tests}
-Partial answer (may be empty): {partial}
-"""
+    prompt = (
+        "Provide ONE concise, actionable hint (no solutions, no reasoning dumps).\n"
+        "Reply with the hint sentence only.\n\n"
+        f"{json.dumps(brief, ensure_ascii=False)}\n\n"
+        f"Partial answer: {partial}"
+    )
 
     try:
         out = await chat(
-            messages=[{"role": "system", "content": "Be concise; one actionable hint."},
-                      {"role": "user", "content": truncate(hint_prompt)}],
+            messages=[
+                {"role":"system","content":"Reply with ONE actionable hint, ≤25 words. No preamble, no examples, no lists, no reasoning tags."},
+                {"role":"user","content":truncate(prompt)}
+            ],
             model=pick_model("reason"),
-            temperature=0.3,
+            temperature=0.1,
+            max_tokens=80,
+            stop=["</think>", "\n\n"]   
         )
-        return {"hint": out.strip()}
+
+        clean = first_sentence(strip_cot(out))
+        if not clean:  # fallback to general model if empty
+            out2 = await chat(
+                messages=[{"role":"system","content":"ONE concise hint, ≤25 words."},
+                          {"role":"user","content":truncate(prompt)}],
+                model=pick_model("general"),
+                temperature=0.1, max_tokens=80, stop=["\n\n"]
+            )
+            clean = first_sentence(strip_cot(out2)) or "Allocate count[max(nums)+1], increment for each value, return the count array."
+        return {"hint": clean}
+
+    except httpx.HTTPStatusError as e:
+        detail = f"{e.response.status_code} {e.response.reason_phrase} - {e.response.text[:300]}"
+        raise HTTPException(502, f"LLM hint failed: {detail}")
+    except httpx.TimeoutException:
+        raise HTTPException(502, "LLM hint failed: timeout (try smaller model or raise LLM_TIMEOUT).")
     except Exception as e:
-        raise HTTPException(502, f"LLM hint failed: {e}")
+        raise HTTPException(502, f"LLM hint failed: {repr(e)}")
